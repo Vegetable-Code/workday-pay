@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { nextTick } from 'vue'
 import { initStorage, readJson, removeKey, storageHealthy, writeJson } from '../src/core/storage'
+import { toYmd } from '../src/core/dates'
 
 class FakeStorage {
   private map = new Map<string, string>()
@@ -61,6 +62,13 @@ class FakeWindow {
 }
 
 let fakeWindow: FakeWindow
+
+/** n 天前的 "YYYY-MM-DD" */
+function daysAgo(n: number): string {
+  const date = new Date()
+  date.setDate(date.getDate() - n)
+  return toYmd(date)
+}
 
 beforeEach(() => {
   install(new FakeStorage())
@@ -189,6 +197,185 @@ describe('视图持久化', () => {
   })
 })
 
+describe('请假持久化', () => {
+  it('请假记录在重新加载后保留', async () => {
+    const store = await import('../src/stores/settings')
+    store.addLeave('2026-11-04', {
+      start: '09:00',
+      end: '12:00',
+      kind: 'sick',
+      deductPercent: 50,
+    })
+    await nextTick()
+
+    vi.resetModules()
+    const reloaded = await import('../src/stores/settings')
+    const record = reloaded.settings.leaves['2026-11-04']?.[0]
+    expect(record?.start).toBe('09:00')
+    expect(record?.end).toBe('12:00')
+    expect(record?.kind).toBe('sick')
+    expect(record?.deductPercent).toBe(50)
+  })
+
+  it('修改请假后重新加载仍然生效', async () => {
+    const store = await import('../src/stores/settings')
+    const created = store.addLeave('2026-11-04', {
+      start: '09:00',
+      end: '12:00',
+      kind: 'personal',
+      deductPercent: 100,
+    })
+    store.updateLeave('2026-11-04', created!.id, { deductPercent: 0 })
+    await nextTick()
+
+    vi.resetModules()
+    const reloaded = await import('../src/stores/settings')
+    expect(reloaded.settings.leaves['2026-11-04']?.[0]?.deductPercent).toBe(0)
+  })
+
+  it('删除最后一条请假后不留空记录', async () => {
+    const store = await import('../src/stores/settings')
+    const created = store.addLeave('2026-11-04', {
+      start: '09:00',
+      end: '12:00',
+      kind: 'personal',
+      deductPercent: 100,
+    })
+    store.removeLeave('2026-11-04', created!.id)
+    await nextTick()
+
+    vi.resetModules()
+    const reloaded = await import('../src/stores/settings')
+    expect(reloaded.settings.leaves['2026-11-04']).toBeUndefined()
+  })
+
+  it('同一天可以存多条请假', async () => {
+    const store = await import('../src/stores/settings')
+    store.addLeave('2026-11-04', {
+      start: '09:00',
+      end: '10:00',
+      kind: 'personal',
+      deductPercent: 100,
+    })
+    store.addLeave('2026-11-04', {
+      start: '13:30',
+      end: '15:00',
+      kind: 'sick',
+      deductPercent: 50,
+    })
+    await nextTick()
+
+    vi.resetModules()
+    const reloaded = await import('../src/stores/settings')
+    expect(reloaded.settings.leaves['2026-11-04']).toHaveLength(2)
+  })
+
+  it('结束时间不晚于开始时间时拒绝新增', async () => {
+    const store = await import('../src/stores/settings')
+    const created = store.addLeave('2026-11-04', {
+      start: '12:00',
+      end: '09:00',
+      kind: 'personal',
+      deductPercent: 100,
+    })
+    expect(created).toBeNull()
+    expect(store.leavesOn('2026-11-04')).toHaveLength(0)
+  })
+})
+
+describe('请假数据读取时的归一化', () => {
+  it('丢弃损坏的请假记录', async () => {
+    localStorage.setItem(
+      'workday-pay:settings',
+      JSON.stringify({
+        monthlySalary: 5000,
+        slots: [{ id: 'slot-1', start: '09:00', end: '12:00' }],
+        leaves: {
+          '2026-11-04': [
+            { id: 'ok', start: '09:00', end: '12:00', kind: 'sick', deductPercent: 50 },
+            { id: 'bad-range', start: '12:00', end: '09:00', kind: 'sick', deductPercent: 50 },
+            { id: 'bad-time', start: '9:00', end: '12:00', kind: 'sick', deductPercent: 50 },
+          ],
+          'not-a-date': [{ id: 'x', start: '09:00', end: '12:00', kind: 'sick' }],
+        },
+      }),
+    )
+
+    const store = await import('../src/stores/settings')
+    const records = store.leavesOn('2026-11-04')
+    expect(records).toHaveLength(1)
+    expect(records[0]?.id).toBe('ok')
+    expect(records[0]?.kind).toBe('sick')
+    expect(store.leavesOn('not-a-date')).toHaveLength(0)
+  })
+
+  it('未知类型回落为事假', async () => {
+    localStorage.setItem(
+      'workday-pay:settings',
+      JSON.stringify({
+        monthlySalary: 5000,
+        slots: [{ id: 'slot-1', start: '09:00', end: '12:00' }],
+        leaves: {
+          '2026-11-04': [
+            { id: 'weird', start: '09:00', end: '10:00', kind: 'unknown', deductPercent: 50 },
+          ],
+        },
+      }),
+    )
+
+    const store = await import('../src/stores/settings')
+    expect(store.leavesOn('2026-11-04')[0]?.kind).toBe('personal')
+  })
+
+  it('把扣薪百分比收敛到 0~100', async () => {
+    localStorage.setItem(
+      'workday-pay:settings',
+      JSON.stringify({
+        monthlySalary: 5000,
+        slots: [{ id: 'slot-1', start: '09:00', end: '12:00' }],
+        leaves: {
+          '2026-11-04': [
+            { id: 'high', start: '09:00', end: '10:00', kind: 'sick', deductPercent: 180 },
+            { id: 'low', start: '11:00', end: '12:00', kind: 'sick', deductPercent: -20 },
+            { id: 'missing', start: '13:00', end: '14:00', kind: 'sick' },
+          ],
+        },
+      }),
+    )
+
+    const store = await import('../src/stores/settings')
+    const records = store.leavesOn('2026-11-04')
+    expect(records.find((item) => item.id === 'high')?.deductPercent).toBe(100)
+    expect(records.find((item) => item.id === 'low')?.deductPercent).toBe(0)
+    // 缺字段时按全额扣除处理
+    expect(records.find((item) => item.id === 'missing')?.deductPercent).toBe(100)
+  })
+
+  it('超过保留期的请假记录被裁掉', async () => {
+    const oldDate = daysAgo(500)
+    const recentDate = daysAgo(10)
+    localStorage.setItem(
+      'workday-pay:settings',
+      JSON.stringify({
+        monthlySalary: 5000,
+        slots: [{ id: 'slot-1', start: '09:00', end: '12:00' }],
+        leaves: {
+          [oldDate]: [
+            { id: 'old', start: '09:00', end: '12:00', kind: 'sick', deductPercent: 100 },
+          ],
+          [recentDate]: [
+            { id: 'recent', start: '09:00', end: '12:00', kind: 'sick', deductPercent: 100 },
+          ],
+        },
+      }),
+    )
+
+    const store = await import('../src/stores/settings')
+    expect(store.settings.leaves[oldDate]).toBeUndefined()
+    expect(store.settings.leaves[recentDate]).toHaveLength(1)
+  })
+})
+
 describe('跨标签页同步', () => {
   it('其他标签页改了设置后本页跟着更新', async () => {
     const store = await import('../src/stores/settings')
@@ -224,5 +411,27 @@ describe('跨标签页同步', () => {
 
     expect(store.view.month).toBe(9)
     expect(store.view.selectedDate).toBe('2026-09-08')
+  })
+
+  it('其他标签页加了请假后本页跟着更新', async () => {
+    const store = await import('../src/stores/settings')
+    expect(store.leavesOn('2026-11-04')).toHaveLength(0)
+
+    localStorage.setItem(
+      'workday-pay:settings',
+      JSON.stringify({
+        monthlySalary: 15000,
+        slots: [{ id: 'slot-1', start: '09:00', end: '12:00' }],
+        leaves: {
+          '2026-11-04': [
+            { id: 'l1', start: '09:00', end: '12:00', kind: 'sick', deductPercent: 100 },
+          ],
+        },
+      }),
+    )
+    fakeWindow.emit('storage', 'workday-pay:settings')
+
+    expect(store.leavesOn('2026-11-04')).toHaveLength(1)
+    expect(store.leavesOn('2026-11-04')[0]?.deductPercent).toBe(100)
   })
 })

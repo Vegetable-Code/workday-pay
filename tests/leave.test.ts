@@ -209,6 +209,59 @@ describe('请假与打卡', () => {
     expect(day.creditedMinutes).toBe(0)
     expect(day.earned).toBe(0)
   })
+
+  it('打卡时间完全落在请假时段内时不产生出勤收入', () => {
+    const settings = makeSettings({
+      // 09:30 打卡、11:30 收工,整段都在 09:00-12:00 的请假里
+      sessions: {
+        [date]: {
+          start: new Date(2026, 10, 2, 9, 30).getTime(),
+          end: new Date(2026, 10, 2, 11, 30).getTime(),
+        },
+      },
+      leaves: { [date]: [leave(date, '09:00', '12:00', 100)] },
+    })
+    const day = computeDayEarnings(date, 200, settings, data, now)
+    expect(day.workedMinutes).toBe(0)
+    expect(day.creditedMinutes).toBe(0)
+    expect(day.earned).toBe(0)
+  })
+
+  it('打卡跨越请假时段时只对未请假部分计薪', () => {
+    const settings = makeSettings({
+      // 11:00 打卡、14:00 收工,跨过 09:00-12:00 的请假
+      sessions: {
+        [date]: {
+          start: new Date(2026, 10, 2, 11, 0).getTime(),
+          end: new Date(2026, 10, 2, 14, 0).getTime(),
+        },
+      },
+      leaves: { [date]: [leave(date, '09:00', '12:00', 100)] },
+    })
+    const day = computeDayEarnings(date, 200, settings, data, now)
+    // 11:00-12:00 在请假里,13:30-14:00 是真实出勤
+    expect(day.workedMinutes).toBe(30)
+    expect(day.leaveMinutes).toBe(180)
+    expect(day.creditedMinutes).toBe(30)
+  })
+
+  it('带薪假的打卡时段不影响带薪工时', () => {
+    const settings = makeSettings({
+      sessions: {
+        [date]: {
+          start: new Date(2026, 10, 2, 9, 30).getTime(),
+          end: new Date(2026, 10, 2, 11, 30).getTime(),
+        },
+      },
+      leaves: { [date]: [leave(date, '09:00', '12:00', 0)] },
+    })
+    const day = computeDayEarnings(date, 200, settings, data, now)
+    // 出勤 0,但带薪假补回 180 分钟
+    expect(day.workedMinutes).toBe(0)
+    expect(day.leavePaidMinutes).toBe(180)
+    expect(day.creditedMinutes).toBe(180)
+    expect(day.earned).toBeCloseTo(200 * 3, 6)
+  })
 })
 
 describe('月度计薪口径', () => {

@@ -41,6 +41,16 @@ const ranges = computed(() =>
     .sort((a, b) => a.start - b.start),
 )
 
+/** 请假区间与 [from, to] 重叠的分钟数 */
+function leaveOverlap(from: number, to: number): number {
+  let total = 0
+  for (const range of props.leaveRanges ?? []) {
+    const overlap = Math.min(to, range.end) - Math.max(from, range.start)
+    if (overlap > 0) total += overlap
+  }
+  return total
+}
+
 const windowStart = computed(() => ranges.value[0]?.start ?? 0)
 const windowEnd = computed(() => {
   const last = ranges.value[ranges.value.length - 1]
@@ -73,7 +83,11 @@ const segments = computed<Segment[]>(() => {
     }
     const coveredStart = Math.max(range.start, sessionFrom.value)
     const coveredEnd = Math.min(range.end, sessionTo.value)
-    const covered = Math.max(0, coveredEnd - coveredStart)
+    // 请假时段不产生出勤收入,填充时扣掉
+    const covered = Math.max(
+      0,
+      coveredEnd - coveredStart - leaveOverlap(coveredStart, coveredEnd),
+    )
     const span = Math.max(1, range.end - range.start)
     out.push({
       key: range.id,
@@ -124,14 +138,17 @@ const slotStates = computed(() =>
       Math.min(end, sessionTo.value) - Math.max(start, sessionFrom.value),
     )
     const span = Math.max(1, end - start)
+    const leaveMinutes = leaveOverlap(start, end)
     const state = !props.isWorkday
       ? 'off'
-      : covered >= span
-        ? 'done'
-        : covered > 0
-          ? 'running'
-          : 'pending'
-    return { slot, state, minutes: Math.max(0, end - start) }
+      : leaveMinutes >= span
+        ? 'leave'
+        : covered >= span
+          ? 'done'
+          : covered > 0
+            ? 'running'
+            : 'pending'
+    return { slot, state, minutes: Math.max(0, end - start), leaveMinutes }
   }),
 )
 
@@ -188,7 +205,15 @@ const progress = computed(() =>
         <li v-for="item in slotStates" :key="item.slot.id" class="timeline__slot" :data-state="item.state">
           <span class="timeline__slot-time tabular">{{ item.slot.start }} — {{ item.slot.end }}</span>
           <span class="timeline__slot-tag">
-            {{ item.state === 'done' ? '已完成' : item.state === 'running' ? '进行中' : '未开始' }}
+            {{
+              item.state === 'leave'
+                ? '请假'
+                : item.state === 'done'
+                  ? '已完成'
+                  : item.state === 'running'
+                    ? '进行中'
+                    : '未开始'
+            }}
           </span>
         </li>
       </ul>
@@ -351,6 +376,15 @@ const progress = computed(() =>
 
 .timeline__slot[data-state='running'] .timeline__slot-tag {
   color: var(--teal-300);
+}
+
+/* 请假时段不计入出勤,标成请假而不是已完成 */
+.timeline__slot[data-state='leave'] {
+  border-color: rgba(217, 106, 78, 0.45);
+}
+
+.timeline__slot[data-state='leave'] .timeline__slot-tag {
+  color: var(--brick-300);
 }
 
 .timeline__bar {

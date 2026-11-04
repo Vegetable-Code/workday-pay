@@ -61,6 +61,12 @@ const selectedSlots = computed(() => {
   return daySchedule(selectedDate.value, settings, holidayData.value).slots
 })
 
+// 扣除请假后的实际出勤时段:计时与收入都按它来,请假时段不参与
+const selectedWorkSlots = computed(() => {
+  if (!selectedDay.value) return []
+  return daySchedule(selectedDate.value, settings, holidayData.value).workSlots
+})
+
 const selectedLeaveRanges = computed(() =>
   leaveRanges(settings.leaves[selectedDate.value] ?? []).map((range) => ({
     start: range.start,
@@ -74,15 +80,15 @@ const monthLeaveDates = computed(() =>
     .map((day) => day.date),
 )
 
-const todaySlots = computed(() =>
-  daySchedule(today.value, settings, holidayData.value).slots,
+const todayWorkSlots = computed(() =>
+  daySchedule(today.value, settings, holidayData.value).workSlots,
 )
 
 const session = computed(() =>
   sessionView(
     today.value,
     settings.sessions[today.value],
-    todaySlots.value,
+    todayWorkSlots.value,
     now.value,
   ),
 )
@@ -91,7 +97,7 @@ const selectedSession = computed(() =>
   sessionView(
     selectedDate.value,
     settings.sessions[selectedDate.value],
-    selectedSlots.value,
+    selectedWorkSlots.value,
     now.value,
   ),
 )
@@ -193,6 +199,8 @@ const clockDisabled = computed(
     !isCurrentMonth.value ||
     !result.value.todayIsWorkday ||
     result.value.workdayCount === 0 ||
+    // 全天请假时没有任何需要出勤的时段,打卡没有意义
+    todayWorkSlots.value.length === 0 ||
     !session.value.actionable,
 )
 
@@ -202,6 +210,7 @@ const clockHint = computed(() => {
   if (!isCurrentMonth.value) return '回到本月才能打卡计时'
   if (todayDay.value?.kind === 'notStarted') return '尚未入职,今天不计薪'
   if (!result.value.todayIsWorkday) return '今日不是工作日,没有工资增长'
+  if (todayWorkSlots.value.length === 0) return '今天全天请假,没有需要出勤的时段'
   const view = session.value
   const earned = `已赚 ¥${formatMoney(result.value.earnedToday)}`
   switch (view.phase) {
@@ -362,7 +371,7 @@ function toggleClock(): void {
               :slots="selectedSlots"
               :now-minutes="nowMinutes"
               :worked-minutes="selectedEarnings.workedMinutes"
-              :scheduled-minutes="selectedEarnings.scheduledMinutes"
+              :scheduled-minutes="selectedEarnings.attendedMinutes"
               :is-workday="selectedEarnings.isWorkday"
               :session-from="selectedSession.from"
               :session-to="selectedSession.to"
