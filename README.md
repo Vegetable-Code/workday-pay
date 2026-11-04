@@ -4,6 +4,8 @@
 
 纯前端,Vite + Vue 3 + TypeScript,数据存在浏览器 localStorage,不上传任何服务器。
 
+**在线地址**:<https://vegetable-code.github.io/workday-pay/>
+
 ## 功能
 
 - **当月工作日与工时自动计算** — 法定假日、调休放假、调休补班全部按国务院放假安排标注,日历上一眼看清;排班工时按小时累加,半天自动折算。
