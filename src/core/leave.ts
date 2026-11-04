@@ -72,6 +72,8 @@ interface Segment {
   covered: boolean
   /** 该片段适用的扣薪百分比 */
   percent: number
+  /** 拥有该片段的请假记录下标(重叠时取扣得最多的那条) */
+  owner: number
 }
 
 function scheduleRanges(slots: TimeSlot[]): SlotRange[] {
@@ -92,11 +94,11 @@ function scheduleRanges(slots: TimeSlot[]): SlotRange[] {
  */
 function splitSegments(slots: TimeSlot[], records: LeaveRecord[]): Segment[] {
   const schedule = scheduleRanges(slots)
-  const leaves: Array<{ range: SlotRange; percent: number }> = []
-  for (const record of records) {
+  const leaves: Array<{ range: SlotRange; percent: number; recordIndex: number }> = []
+  records.forEach((record, recordIndex) => {
     const range = leaveRange(record)
-    if (range) leaves.push({ range, percent: clampPercent(record.deductPercent) })
-  }
+    if (range) leaves.push({ range, percent: clampPercent(record.deductPercent), recordIndex })
+  })
 
   const points = new Set<number>()
   for (const range of schedule) {
@@ -117,13 +119,19 @@ function splitSegments(slots: TimeSlot[], records: LeaveRecord[]): Segment[] {
     const inSchedule = schedule.some((range) => range.start <= start && range.end >= end)
     let percent = 0
     let covered = false
+    let owner = -1
     for (const item of leaves) {
       if (item.range.start > start || item.range.end < end) continue
       covered = true
       // 多条请假重叠时取扣得最多的那条
-      percent = Math.max(percent, item.percent)
+      // 注意:不能只比百分比,扣 0% 的带薪假也要有归属,
+      // 所以第一条覆盖的记录先占位,之后只有百分比更高才替换。
+      if (owner === -1 || item.percent > percent) {
+        percent = item.percent
+        owner = item.recordIndex
+      }
     }
-    segments.push({ start, end, inSchedule, covered, percent })
+    segments.push({ start, end, inSchedule, covered, percent, owner })
   }
   return segments
 }
@@ -158,6 +166,66 @@ export function leaveComputation(records: LeaveRecord[], slots: TimeSlot[]): Lea
     if (overlap) covered.add(record)
   }
   return { total, deducted, paid, count: covered.size }
+}
+
+export interface LeaveRecordBreakdown {
+  /** 该条请假与排班重叠的总时长(分钟),不扣掉被别的假覆盖的部分 */
+  overlapMinutes: number
+  /** 该条请假实际归属自己的时长(分钟),重叠时归扣得最多的那条 */
+  ownedMinutes: number
+  /** 按重叠规则实际由该条请假扣掉的等效时长(分钟) */
+  deductedMinutes: number
+  /** 该条请假里仍然带薪的时长(分钟) */
+  paidMinutes: number
+}
+
+/**
+ * 按重叠规则把请假时长归属到每一条记录。
+ *
+ * 归属规则与 leaveComputation 一致:同一段时间被多条假覆盖时,
+ * 这一段只算给扣薪百分比最大的那条,其余的这条不再重复计扣。
+ * 因此所有记录的 deductedMinutes 之和 === leaveComputation().deducted,
+ * 列表里逐条显示的数字与汇总数字严格对得上。
+ */
+export function leaveRecordBreakdown(
+  records: LeaveRecord[],
+  slots: TimeSlot[],
+): LeaveRecordBreakdown[] {
+  const breakdown: LeaveRecordBreakdown[] = records.map(() => ({
+    overlapMinutes: 0,
+    ownedMinutes: 0,
+    deductedMinutes: 0,
+    paidMinutes: 0,
+  }))
+
+  // 每条记录单独与排班的重叠时长
+  records.forEach((record, index) => {
+    const range = leaveRange(record)
+    if (!range) return
+    let overlap = 0
+    for (const slot of slots) {
+      const slotRange = toSlotRange(slot)
+      if (!slotRange) continue
+      overlap += Math.max(
+        0,
+        Math.min(slotRange.end, range.end) - Math.max(slotRange.start, range.start),
+      )
+    }
+    breakdown[index]!.overlapMinutes = overlap
+  })
+
+  // 按片段归属:同一段只归给扣得最多的那条
+  for (const segment of splitSegments(slots, records)) {
+    if (!segment.inSchedule || !segment.covered) continue
+    const owner = breakdown[segment.owner]
+    if (!owner) continue
+    const minutes = segment.end - segment.start
+    owner.ownedMinutes += minutes
+    owner.deductedMinutes += (minutes * segment.percent) / 100
+    owner.paidMinutes += (minutes * (100 - segment.percent)) / 100
+  }
+
+  return breakdown
 }
 
 /**

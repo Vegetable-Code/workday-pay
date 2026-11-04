@@ -6,6 +6,7 @@ import {
   LEAVE_KIND_LABELS,
   leaveComputation,
   leaveKindLabel,
+  leaveRecordBreakdown,
   leaveSortKey,
 } from '@/core/leave'
 import { formatHours, formatMoney } from '@/core/format'
@@ -38,16 +39,19 @@ const records = computed<LeaveRecord[]>(() =>
 // 当天所有请假合计出来的工时与扣钱
 const summary = computed(() => leaveComputation(records.value, props.slots))
 
+// 每条请假在重叠规则下实际归属到的时长与扣款
+const breakdown = computed(() => leaveRecordBreakdown(records.value, props.slots))
+
 // 每条请假单独算一次,用来在列表里显示各自扣了多少
 const rows = computed(() =>
-  records.value.map((record) => {
-    const single = leaveComputation([record], props.slots)
+  records.value.map((record, index) => {
+    const detail = breakdown.value[index]
     return {
       record,
-      overlapHours: single.total / 60,
-      deductedHours: single.deducted / 60,
-      paidHours: single.paid / 60,
-      money: (single.deducted / 60) * props.hourlyRate,
+      overlapHours: (detail?.overlapMinutes ?? 0) / 60,
+      deductedHours: (detail?.deductedMinutes ?? 0) / 60,
+      paidHours: (detail?.paidMinutes ?? 0) / 60,
+      money: ((detail?.deductedMinutes ?? 0) / 60) * props.hourlyRate,
     }
   }),
 )
@@ -102,7 +106,7 @@ function changePercent(record: LeaveRecord, value: number): void {
       <p class="label">请假</p>
       <div class="leave__head-right">
         <span v-if="records.length" class="leave__summary tabular">
-          {{ records.length }} 条 · {{ formatHours(summary.total / 60) }}h ·
+          {{ records.length }} 条 · 合计 {{ formatHours(summary.total / 60) }}h ·
           扣 ¥{{ formatMoney(summary.deducted / 60 * hourlyRate) }}
         </span>
         <button class="leave__toggle" type="button" @click="toggleForm">
@@ -134,7 +138,9 @@ function changePercent(record: LeaveRecord, value: number): void {
           %
         </span>
         <span class="leave__detail tabular">
-          {{ formatHours(row.deductedHours) }}h 扣 ¥{{ formatMoney(row.money) }}
+          {{ formatHours(row.overlapHours) }}h
+          <template v-if="row.paidHours > 0"> · 带薪 {{ formatHours(row.paidHours) }}h</template>
+          · 扣 ¥{{ formatMoney(row.money) }}
         </span>
         <button
           class="leave__remove"

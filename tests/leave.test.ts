@@ -13,6 +13,7 @@ import {
   clampPercent,
   leaveComputation,
   leavePaidMinutesUntil,
+  leaveRecordBreakdown,
   workSlotsAfterLeave,
 } from '../src/core/leave'
 
@@ -100,6 +101,58 @@ describe('请假时长统计', () => {
     expect(clampPercent(150)).toBe(100)
     expect(clampPercent(33.4)).toBe(33)
     expect(clampPercent(Number.NaN)).toBe(100)
+  })
+})
+
+describe('请假时长归属到每一条记录', () => {
+  it('不重叠时每条各自算自己的', () => {
+    const records = [
+      leave('2026-11-02', '09:00', '10:00'),
+      leave('2026-11-02', '13:30', '14:30'),
+    ]
+    const rows = leaveRecordBreakdown(records, SLOTS)
+    expect(rows[0]?.overlapMinutes).toBe(60)
+    expect(rows[0]?.deductedMinutes).toBe(60)
+    expect(rows[1]?.overlapMinutes).toBe(60)
+    expect(rows[1]?.deductedMinutes).toBe(60)
+  })
+
+  it('重叠时只归给扣得最多的那条', () => {
+    const records = [
+      leave('2026-11-02', '09:00', '12:00', 50),
+      leave('2026-11-02', '10:00', '11:00', 100),
+    ]
+    const rows = leaveRecordBreakdown(records, SLOTS)
+    // 10:00-11:00 这一小时归给 100% 的那条
+    expect(rows[0]?.ownedMinutes).toBe(120)
+    expect(rows[0]?.deductedMinutes).toBe(60)
+    expect(rows[1]?.ownedMinutes).toBe(60)
+    expect(rows[1]?.deductedMinutes).toBe(60)
+  })
+
+  it('逐条扣款之和与汇总一致', () => {
+    const records = [
+      leave('2026-11-02', '09:00', '12:00', 50),
+      leave('2026-11-02', '10:00', '11:00', 100),
+      leave('2026-11-02', '14:00', '15:00', 0),
+    ]
+    const rows = leaveRecordBreakdown(records, SLOTS)
+    const summary = leaveComputation(records, SLOTS)
+    const sumDeducted = rows.reduce((sum, row) => sum + row.deductedMinutes, 0)
+    const sumPaid = rows.reduce((sum, row) => sum + row.paidMinutes, 0)
+    expect(sumDeducted).toBeCloseTo(summary.deducted, 6)
+    expect(sumPaid).toBeCloseTo(summary.paid, 6)
+    expect(sumDeducted + sumPaid).toBeCloseTo(summary.total, 6)
+  })
+
+  it('重叠时长按各自与排班的交集合计', () => {
+    const records = [
+      leave('2026-11-02', '09:00', '12:00'),
+      leave('2026-11-02', '10:00', '11:00'),
+    ]
+    const rows = leaveRecordBreakdown(records, SLOTS)
+    expect(rows[0]?.overlapMinutes).toBe(180)
+    expect(rows[1]?.overlapMinutes).toBe(60)
   })
 })
 
