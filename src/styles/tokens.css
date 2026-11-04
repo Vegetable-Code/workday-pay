@@ -1,0 +1,74 @@
+:root {
+  color-scheme: dark;
+
+  /* 炭黑基底 */
+  --ink-950: #0b0a09;
+  --ink-900: #100e0c;
+  --ink-850: #15120f;
+  --ink-800: #1b1714;
+  --ink-750: #221d18;
+  --ink-700: #2b241d;
+
+  /* 暖金主强调 */
+  --brass-200: #f7e2b4;
+  --brass-300: #f0cd8b;
+  --brass-400: #e3b263;
+  --brass-500: #c9913f;
+  --brass-600: #93682a;
+  --brass-700: #5f4320;
+
+  /* 冷青正向 */
+  --teal-300: #7fe0d2;
+  --teal-400: #4ec6b6;
+  --teal-600: #22786c;
+
+  /* 砖红假日 */
+  --brick-300: #ef9a83;
+  --brick-400: #d96a4e;
+  --brick-600: #8d3a25;
+
+  /* 文字 */
+  --ivory-100: #f5f0e7;
+  --ivory-200: #e2dbcd;
+  --ivory-400: #b3a894;
+  --ivory-600: #7c7263;
+  --ivory-700: #574f44;
+
+  /* 描边与分隔 */
+  --line-faint: rgba(227, 178, 99, 0.1);
+  --line-soft: rgba(227, 178, 99, 0.2);
+  --line-strong: rgba(227, 178, 99, 0.42);
+
+  /* 阴影 */
+  --shadow-panel: 0 26px 60px -42px rgba(0, 0, 0, 0.95), inset 0 1px 0 rgba(255, 255, 255, 0.045);
+  --shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.05), inset 0 -1px 0 rgba(0, 0, 0, 0.4);
+  --shadow-glow: 0 0 0 1px rgba(227, 178, 99, 0.25), 0 18px 46px -22px rgba(227, 178, 99, 0.45);
+
+  /* 圆角 */
+  --radius-xs: 3px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+
+  /* 间距 */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+
+  /* 字体 */
+  --font-sans: "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei", "Noto Sans SC", system-ui,
+    -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", "SFMono-Regular", "Cascadia Mono", Consolas, "Liberation Mono",
+    monospace;
+
+  /* 动效 */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-fast: 140ms;
+  --dur-base: 260ms;
+  --dur-slow: 520ms;
+}

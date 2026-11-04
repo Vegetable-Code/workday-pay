@@ -1,0 +1,228 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { nextTick } from 'vue'
+import { initStorage, readJson, removeKey, storageHealthy, writeJson } from '../src/core/storage'
+
+class FakeStorage {
+  private map = new Map<string, string>()
+
+  get length(): number {
+    return this.map.size
+  }
+
+  clear(): void {
+    this.map.clear()
+  }
+
+  getItem(key: string): string | null {
+    return this.map.get(key) ?? null
+  }
+
+  key(index: number): string | null {
+    return [...this.map.keys()][index] ?? null
+  }
+
+  removeItem(key: string): void {
+    this.map.delete(key)
+  }
+
+  setItem(key: string, value: string): void {
+    this.map.set(key, String(value))
+  }
+}
+
+/** 模拟禁用存储的浏览器:写入直接抛错 */
+class BlockedStorage extends FakeStorage {
+  override setItem(): void {
+    throw new Error('storage disabled')
+  }
+}
+
+function install(storage: FakeStorage): void {
+  Object.defineProperty(globalThis, 'localStorage', {
+    value: storage,
+    configurable: true,
+    writable: true,
+  })
+}
+
+/** 模拟浏览器环境:只保留存储事件监听需要的部分 */
+class FakeWindow {
+  private listeners = new Map<string, Set<(event: { key: string | null }) => void>>()
+
+  addEventListener(type: string, listener: (event: { key: string | null }) => void): void {
+    const group = this.listeners.get(type) ?? new Set()
+    group.add(listener)
+    this.listeners.set(type, group)
+  }
+
+  emit(type: string, key: string | null): void {
+    for (const listener of this.listeners.get(type) ?? []) listener({ key })
+  }
+}
+
+let fakeWindow: FakeWindow
+
+beforeEach(() => {
+  install(new FakeStorage())
+  fakeWindow = new FakeWindow()
+  Object.defineProperty(globalThis, 'window', {
+    value: fakeWindow,
+    configurable: true,
+    writable: true,
+  })
+  storageHealthy.value = true
+  vi.resetModules()
+})
+
+afterEach(() => {
+  Reflect.deleteProperty(globalThis, 'window')
+})
+
+describe('本地存储封装', () => {
+  it('写入后能原样读回', () => {
+    expect(writeJson('k', { a: 1 })).toBe(true)
+    expect(readJson<{ a: number } | null>('k', null)).toEqual({ a: 1 })
+  })
+
+  it('键不存在时返回兜底值', () => {
+    expect(readJson('missing', 'fallback')).toBe('fallback')
+  })
+
+  it('数据损坏时返回兜底值', () => {
+    localStorage.setItem('broken', '{not json')
+    expect(readJson('broken', 'fallback')).toBe('fallback')
+  })
+
+  it('写入失败时标记存储不可用', () => {
+    install(new BlockedStorage())
+    expect(writeJson('k', 1)).toBe(false)
+    expect(storageHealthy.value).toBe(false)
+  })
+
+  it('探测到存储不可用时状态为异常', () => {
+    install(new BlockedStorage())
+    initStorage()
+    expect(storageHealthy.value).toBe(false)
+  })
+
+  it('可以删除键', () => {
+    writeJson('k', 1)
+    removeKey('k')
+    expect(readJson('k', null)).toBeNull()
+  })
+})
+
+describe('设置持久化', () => {
+  it('月薪与入职日期在重新加载后保留', async () => {
+    const store = await import('../src/stores/settings')
+    store.updateSalary(20000)
+    store.setStartDate('2026-10-09')
+    await nextTick()
+
+    vi.resetModules()
+    const reloaded = await import('../src/stores/settings')
+    expect(reloaded.settings.monthlySalary).toBe(20000)
+    expect(reloaded.settings.startDate).toBe('2026-10-09')
+  })
+
+  it('打卡记录在重新加载后保留', async () => {
+    const store = await import('../src/stores/settings')
+    store.clockIn(new Date(2026, 10, 4, 9, 0))
+    await nextTick()
+
+    vi.resetModules()
+    const reloaded = await import('../src/stores/settings')
+    expect(reloaded.settings.sessions['2026-11-04']?.start).toBe(
+      new Date(2026, 10, 4, 9, 0).getTime(),
+    )
+  })
+
+  it('旧数据缺少每周排班时按双休迁移', async () => {
+    localStorage.setItem(
+      'workday-pay:settings',
+      JSON.stringify({
+        monthlySalary: 5000,
+        slots: [{ id: 'slot-1', start: '09:00', end: '12:00' }],
+        weeklyOverrides: {},
+        startDate: '2026-10-09',
+        sessions: {},
+      }),
+    )
+
+    const store = await import('../src/stores/settings')
+    expect(store.settings.workDays).toEqual([1, 2, 3, 4, 5])
+    expect(store.settings.monthlySalary).toBe(5000)
+    expect(store.settings.startDate).toBe('2026-10-09')
+  })
+
+  it('每周排班的星期与时段覆盖在重新加载后保留', async () => {
+    const store = await import('../src/stores/settings')
+    store.applyWeekPreset('fiveHalf')
+    await nextTick()
+
+    expect(store.settings.workDays).toEqual([1, 2, 3, 4, 5, 6])
+    expect(store.settings.weeklyOverrides[6]).toEqual([
+      { id: 'slot-1-lead', start: '09:00', end: '12:00' },
+    ])
+
+    vi.resetModules()
+    const reloaded = await import('../src/stores/settings')
+    expect(reloaded.settings.workDays).toEqual([1, 2, 3, 4, 5, 6])
+    expect(reloaded.settings.weeklyOverrides[6]).toEqual([
+      { id: 'slot-1-lead', start: '09:00', end: '12:00' },
+    ])
+  })
+})
+
+describe('视图持久化', () => {
+  it('查看的月份与选中日期在重新加载后保留', async () => {
+    const store = await import('../src/stores/view')
+    store.setViewMonth(2026, 10)
+    store.selectViewDate('2026-10-15')
+    await nextTick()
+
+    vi.resetModules()
+    const reloaded = await import('../src/stores/view')
+    expect(reloaded.view.year).toBe(2026)
+    expect(reloaded.view.month).toBe(10)
+    expect(reloaded.view.selectedDate).toBe('2026-10-15')
+  })
+})
+
+describe('跨标签页同步', () => {
+  it('其他标签页改了设置后本页跟着更新', async () => {
+    const store = await import('../src/stores/settings')
+    store.updateSalary(12345)
+    await nextTick()
+
+    localStorage.setItem(
+      'workday-pay:settings',
+      JSON.stringify({
+        monthlySalary: 8888,
+        slots: [{ id: 'slot-1', start: '09:00', end: '12:00' }],
+        weeklyOverrides: {},
+        startDate: '2026-01-05',
+        sessions: {},
+      }),
+    )
+    fakeWindow.emit('storage', 'workday-pay:settings')
+
+    expect(store.settings.monthlySalary).toBe(8888)
+    expect(store.settings.startDate).toBe('2026-01-05')
+  })
+
+  it('其他标签页换了月份后本页跟着更新', async () => {
+    const store = await import('../src/stores/view')
+    store.setViewMonth(2026, 11)
+    await nextTick()
+
+    localStorage.setItem(
+      'workday-pay:view',
+      JSON.stringify({ year: 2026, month: 9, selectedDate: '2026-09-08' }),
+    )
+    fakeWindow.emit('storage', 'workday-pay:view')
+
+    expect(store.view.month).toBe(9)
+    expect(store.view.selectedDate).toBe('2026-09-08')
+  })
+})
