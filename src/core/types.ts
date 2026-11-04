@@ -20,6 +20,32 @@ export interface Settings {
   startDate: string
   /** 打卡记录,键为日期 "YYYY-MM-DD" */
   sessions: Record<string, SessionState>
+  /** 请假记录,键为日期 "YYYY-MM-DD" */
+  leaves: Record<string, LeaveRecord[]>
+}
+
+export type LeaveKind =
+  | 'personal'
+  | 'sick'
+  | 'annual'
+  | 'inLieu'
+  | 'marriage'
+  | 'maternity'
+  | 'other'
+
+/** 一条请假记录,按时间段生效 */
+export interface LeaveRecord {
+  id: string
+  /** 请假日期 "YYYY-MM-DD" */
+  date: string
+  /** 开始时间 "HH:mm" */
+  start: string
+  /** 结束时间 "HH:mm" */
+  end: string
+  kind: LeaveKind
+  /** 扣除百分之多少的钱,0~100;0 表示带薪假 */
+  deductPercent: number
+  note?: string
 }
 
 /** 一天的打卡记录 */
@@ -66,8 +92,18 @@ export interface EarningsResult {
   workdayCount: number
   /** 本月排班总工时(小时)—— 计薪分母 */
   scheduledHours: number
-  /** 本月实际出勤工时(小时)—— 计薪分子 */
+  /** 本月实际出勤工时(小时)—— 已排除请假时段 */
   workedHours: number
+  /** 本月计入工资的工时(小时)—— 出勤工时 + 带薪请假工时 */
+  creditedHours: number
+  /** 本月请假工时(小时)—— 与排班重叠的部分 */
+  leaveHours: number
+  /** 本月因请假被扣除的等效工时(小时) */
+  leaveDeductedHours: number
+  /** 本月因请假扣除的钱 */
+  leaveDeduction: number
+  /** 本月请假条数(与排班有重叠的) */
+  leaveCount: number
   /** 每小时工资 = 月薪 ÷ 排班总工时 */
   hourlyRate: number
   /** 折合日薪 = 月薪 ÷ 当月工作日天数 */
@@ -83,6 +119,8 @@ export interface EarningsResult {
   todayIsWorkday: boolean
   todayScheduledMinutes: number
   todayWorkedMinutes: number
+  /** 今日计入工资的时长(出勤 + 带薪请假) */
+  todayCreditedMinutes: number
   /** 今日是否已打卡开始计时 */
   todayClockedIn: boolean
   /** 今日已赚 */

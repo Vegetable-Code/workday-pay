@@ -111,6 +111,7 @@ watch(
 .dial {
   display: flex;
   justify-content: center;
+  align-items: center;
   padding: var(--space-2) 0 var(--space-4);
 }
 
@@ -118,6 +119,7 @@ watch(
   position: relative;
   width: min(320px, 78vw);
   aspect-ratio: 1;
+  container-type: size;
 }
 
 .dial__svg {
@@ -181,7 +183,7 @@ watch(
   justify-content: center;
   gap: 2px;
   color: var(--ivory-100);
-  font-size: clamp(2rem, 8.4vw, 2.9rem);
+  font-size: min(2.6rem, 15cqw);
   font-weight: 500;
   line-height: 1;
   letter-spacing: -0.02em;
@@ -205,7 +207,7 @@ watch(
 }
 
 .dial__ratio {
-  font-size: 11px;
+  font-size: clamp(9px, 3.4cqw, 11px);
   color: var(--ivory-600);
   letter-spacing: 0.04em;
 }
@@ -215,7 +217,7 @@ watch(
   border: 1px solid var(--line-soft);
   border-radius: 999px;
   background: rgba(227, 178, 99, 0.08);
-  font-size: 11px;
+  font-size: clamp(9px, 3.4cqw, 11px);
   letter-spacing: 0.12em;
   color: var(--brass-200);
 }
@@ -243,20 +245,24 @@ watch(
   }
 }
 
-/* 桌面端表盘跟随主栏高度收缩,保证下方时间轴始终有足够空间 */
+/* 桌面端表盘跟随视口高度收缩,保证下方时间轴始终有足够空间 */
 @media (min-width: 920px) {
   .dial {
     padding: 0;
   }
 
   .dial__face {
-    width: min(320px, 78vw, 46vh);
+    /* 窗口越矮表盘越小,给下方时间轴与请假区让出空间 */
+    width: min(320px, 78vw, 34dvh);
   }
+}
 
-  @supports (container-type: size) {
-    .dial__face {
-      width: min(320px, 78vw, 52cqh);
-    }
-  }
+/* 表盘内的文字跟着表盘一起缩放,数字再长也不会顶出表盘 */
+.dial__readout {
+  font-size: clamp(9px, 3.4cqw, 11px);
+}
+
+.dial__readout .dial__caption {
+  font-size: clamp(9px, 3.4cqw, 10px);
 }
 </style>

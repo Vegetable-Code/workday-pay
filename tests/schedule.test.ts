@@ -23,6 +23,7 @@ function makeSettings(overrides: Partial<Settings> = {}): Settings {
     weeklyOverrides: {},
     startDate: '',
     sessions: {},
+    leaves: {},
     ...overrides,
   }
 }

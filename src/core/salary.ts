@@ -1,9 +1,10 @@
 import type { DayInfo, EarningsResult, HolidayData, Settings } from './types'
-import { daysInMonth, fromYmd, toYmd } from './dates'
+import { daysInMonth, fromYmd, minutesSinceMidnight, toYmd } from './dates'
 import { monthDays } from './calendar'
 import { daySchedule, monthSchedule } from './schedule'
 import { overlapSlotMinutes } from './timeslots'
 import { effectiveWork } from './session'
+import { leavePaidMinutesUntil } from './leave'
 
 export interface EarningsInput {
   settings: Settings
@@ -17,8 +18,18 @@ export interface DayEarnings {
   isWorkday: boolean
   /** 当日排班总时长(分钟) */
   scheduledMinutes: number
-  /** 当日已工作时长(分钟) */
+  /** 当日排班扣除请假后的应出勤时长(分钟) */
+  attendedMinutes: number
+  /** 当日已出勤时长(分钟)—— 已排除请假时段 */
   workedMinutes: number
+  /** 当日计入工资的时长(分钟)—— 出勤时长 + 带薪请假时长 */
+  creditedMinutes: number
+  /** 当日请假与排班重叠的总时长(分钟) */
+  leaveMinutes: number
+  /** 当日请假折算后被扣掉的等效时长(分钟) */
+  leaveDeductedMinutes: number
+  /** 当日请假中仍然带薪的时长(分钟) */
+  leavePaidMinutes: number
   /** 当日已赚工资 */
   earned: number
   /** 相对当前时刻的状态 */
@@ -34,12 +45,13 @@ export interface DayEarnings {
  *
  * 计薪口径(全部以小时为准):
  * - 小时工资 = 月薪 ÷ 本月排班总工时(x)
- * - 当日收入 = 小时工资 × 当日已工作小时数
+ * - 当日收入 = 小时工资 × 当日计入工资的时长(出勤 + 带薪请假)
  * - 今天不用打卡:上班时刻起自动补卡,到点自动收工
  * - 手动打卡时,自动补卡段[上班时刻 → 打卡时刻]与手动段[打卡时刻 → 收工]相加
  * - 过去的工作日若留有打卡记录按记录计算,否则按整日工时计入
  * - 未来的工作日与休息日不计收益
  * - 入职日之前的日期一律不计薪
+ * - 请假时段不产生出勤收入;带薪部分(扣除比例 < 100%)按比例计入工资
  */
 export function computeDayEarnings(
   date: string,
@@ -58,7 +70,12 @@ export function computeDayEarnings(
       date,
       isWorkday: false,
       scheduledMinutes: 0,
+      attendedMinutes: 0,
       workedMinutes: 0,
+      creditedMinutes: 0,
+      leaveMinutes: 0,
+      leaveDeductedMinutes: 0,
+      leavePaidMinutes: 0,
       earned: 0,
       state: 'rest',
       clockedIn: false,
@@ -73,7 +90,12 @@ export function computeDayEarnings(
       date,
       isWorkday: true,
       scheduledMinutes,
+      attendedMinutes: schedule.attendedMinutes,
       workedMinutes: 0,
+      creditedMinutes: 0,
+      leaveMinutes: schedule.leaveMinutes,
+      leaveDeductedMinutes: schedule.leaveDeductedMinutes,
+      leavePaidMinutes: 0,
       earned: 0,
       state: 'future',
       clockedIn: false,
@@ -81,21 +103,36 @@ export function computeDayEarnings(
     }
   }
 
-  const work = effectiveWork(date, session, schedule.slots, now)
+  // 出勤只按扣除请假后的时段计算,请假期间打卡不产生收入
+  const work = effectiveWork(date, session, schedule.workSlots, now)
   const workedMinutes = Math.min(
-    scheduledMinutes,
+    schedule.attendedMinutes,
     work.segments.reduce(
-      (sum, segment) => sum + overlapSlotMinutes(schedule.slots, segment.from, segment.to),
+      (sum, segment) => sum + overlapSlotMinutes(schedule.workSlots, segment.from, segment.to),
       0,
     ),
   )
+
+  // 带薪请假按时间流逝计入:过去的日子算满一整天,今天只算到当前时刻
+  const cutoff = date < today ? 1440 : minutesSinceMidnight(now)
+  const leavePaidMinutes = leavePaidMinutesUntil(
+    settings.leaves[date] ?? [],
+    schedule.slots,
+    cutoff,
+  )
+  const creditedMinutes = workedMinutes + leavePaidMinutes
 
   return {
     date,
     isWorkday: true,
     scheduledMinutes,
+    attendedMinutes: schedule.attendedMinutes,
     workedMinutes,
-    earned: hourlyRate * (workedMinutes / 60),
+    creditedMinutes,
+    leaveMinutes: schedule.leaveMinutes,
+    leaveDeductedMinutes: schedule.leaveDeductedMinutes,
+    leavePaidMinutes,
+    earned: hourlyRate * (creditedMinutes / 60),
     state: date < today ? 'past' : 'today',
     clockedIn: Boolean(session),
     autoFilled: work.autoFilled,
@@ -145,6 +182,17 @@ export function computeEarnings(
       )
   const preOnboardingHours = (scheduledMinutes - onboardedMinutes) / 60
 
+  // 请假只统计入职之后的日期;入职前的日期本来就不计薪,请假也不影响分母
+  const onboardedDays = beforeOnboarding
+    ? []
+    : schedule.filter((day) => !(startDate && day.date < startDate))
+  const leaveMinutesTotal = onboardedDays.reduce((sum, day) => sum + day.leaveMinutes, 0)
+  const leaveDeductedMinutesTotal = onboardedDays.reduce(
+    (sum, day) => sum + day.leaveDeductedMinutes,
+    0,
+  )
+  const leaveCount = onboardedDays.reduce((sum, day) => sum + day.leaveCount, 0)
+
   const workdays = beforeOnboarding
     ? []
     : schedule.filter((day) => day.isWorkday).map((day) => day.date)
@@ -156,18 +204,21 @@ export function computeEarnings(
     : 0
   const monthCap =
     scheduledMinutes > 0
-      ? settings.monthlySalary * (onboardedMinutes / scheduledMinutes)
+      ? settings.monthlySalary *
+        (Math.max(0, onboardedMinutes - leaveDeductedMinutesTotal) / scheduledMinutes)
       : 0
 
   const today = toYmd(now)
 
   let earnedTotal = 0
   let workedMinutesTotal = 0
+  let creditedMinutesTotal = 0
   let workedDays = 0
   let todayIsWorkday = false
   let todayClockedIn = false
   let todayScheduledMinutes = 0
   let todayWorkedMinutes = 0
+  let todayCreditedMinutes = 0
   let earnedToday = 0
 
   for (const day of days) {
@@ -177,7 +228,12 @@ export function computeEarnings(
     if (dayEarnings.state === 'past') {
       earnedTotal += dayEarnings.earned
       workedMinutesTotal += dayEarnings.workedMinutes
-      if (dayEarnings.workedMinutes >= dayEarnings.scheduledMinutes) {
+      creditedMinutesTotal += dayEarnings.creditedMinutes
+      // 出勤 + 请假覆盖 = 整日排班,算这一天没有缺勤
+      if (
+        dayEarnings.workedMinutes + dayEarnings.leaveMinutes >=
+        dayEarnings.scheduledMinutes
+      ) {
         workedDays += 1
       }
     } else if (dayEarnings.state === 'today') {
@@ -185,9 +241,11 @@ export function computeEarnings(
       todayClockedIn = dayEarnings.clockedIn
       todayScheduledMinutes = dayEarnings.scheduledMinutes
       todayWorkedMinutes = dayEarnings.workedMinutes
+      todayCreditedMinutes = dayEarnings.creditedMinutes
       earnedToday = dayEarnings.earned
       earnedTotal += earnedToday
       workedMinutesTotal += dayEarnings.workedMinutes
+      creditedMinutesTotal += dayEarnings.creditedMinutes
     }
   }
 
@@ -201,6 +259,11 @@ export function computeEarnings(
     workdayCount,
     scheduledHours,
     workedHours: workedMinutesTotal / 60,
+    creditedHours: creditedMinutesTotal / 60,
+    leaveHours: leaveMinutesTotal / 60,
+    leaveDeductedHours: leaveDeductedMinutesTotal / 60,
+    leaveDeduction: (leaveDeductedMinutesTotal / 60) * hourlyRate,
+    leaveCount,
     hourlyRate,
     dailyRate,
     preOnboardingWorkdays,
@@ -210,6 +273,7 @@ export function computeEarnings(
     todayIsWorkday,
     todayScheduledMinutes,
     todayWorkedMinutes,
+    todayCreditedMinutes,
     todayClockedIn,
     earnedToday,
     earnedTotal,

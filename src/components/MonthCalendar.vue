@@ -10,6 +10,8 @@ const props = defineProps<{
   selected?: string
   /** 当月工作日总数(含入职日之前不计薪的那几天) */
   workdayCount?: number
+  /** 有请假记录的日期 */
+  leaveDates?: string[]
 }>()
 
 const emit = defineEmits<{
@@ -50,6 +52,8 @@ const TAG_TEXT: Record<string, string> = {
   off: '休',
   notStarted: '未',
 }
+
+const leaveSet = computed(() => new Set(props.leaveDates ?? []))
 </script>
 
 <template>
@@ -75,6 +79,12 @@ const TAG_TEXT: Record<string, string> = {
           <span class="calendar__day tabular">{{ Number(cell.day.date.slice(8)) }}</span>
           <span v-if="cell.day.kind !== 'workday' && cell.day.kind !== 'weekend'" class="calendar__tag">
             {{ TAG_TEXT[cell.day.kind] ?? '' }}
+          </span>
+          <span
+            v-else-if="leaveSet.has(cell.day.date)"
+            class="calendar__tag calendar__tag--leave"
+          >
+            请
           </span>
           <span v-else-if="cell.day.kind === 'workday'" class="calendar__dot" />
         </div>
@@ -295,6 +305,11 @@ const TAG_TEXT: Record<string, string> = {
 .calendar__cell[data-kind='inLieu'] .calendar__tag {
   background: var(--brick-600);
   color: var(--brick-300);
+}
+
+.calendar__tag--leave {
+  background: var(--brick-500);
+  color: var(--ivory-100);
 }
 
 .calendar__legend {

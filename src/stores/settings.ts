@@ -1,15 +1,18 @@
 import { computed, reactive, watch } from 'vue'
-import type { SessionState, Settings, TimeSlot, Weekday } from '@/core/types'
-import { isValidSlot, slotBounds, takeLeadingHours } from '@/core/timeslots'
+import type { LeaveRecord, SessionState, Settings, TimeSlot, Weekday } from '@/core/types'
+import { isValidSlot, isValidTime, slotBounds, takeLeadingHours } from '@/core/timeslots'
 import { DEFAULT_WORK_DAYS } from '@/core/calendar'
 import { daySchedule } from '@/core/schedule'
 import { toYmd } from '@/core/dates'
+import { clampPercent, isLeaveKind, newLeaveId } from '@/core/leave'
 import { onStorageChange, readJson, writeJson } from '@/core/storage'
 import { allHolidayData } from '@/data/holidays'
 
 const STORAGE_KEY = 'workday-pay:settings'
 /** 打卡记录只保留最近 120 天 */
 const SESSION_KEEP_DAYS = 120
+/** 请假记录保留最近 400 天,足够覆盖跨年结算 */
+const LEAVE_KEEP_DAYS = 400
 /** 五点五天:周六按基础时段的前 3 小时折算半天 */
 const HALF_DAY_HOURS = 3
 
@@ -24,6 +27,7 @@ function defaultSettings(): Settings {
     weeklyOverrides: {},
     startDate: '',
     sessions: {},
+    leaves: {},
   }
 }
 
@@ -54,6 +58,49 @@ function pruneSessions(sessions: Record<string, SessionState>): Record<string, S
   return kept
 }
 
+function cutoffDate(days: number): string {
+  const cutoff = new Date()
+  cutoff.setDate(cutoff.getDate() - days)
+  return toYmd(cutoff)
+}
+
+/** 归一化单条请假记录,字段不合法就丢弃 */
+function normalizeLeave(value: unknown, date: string): LeaveRecord | null {
+  if (!value || typeof value !== 'object') return null
+  const raw = value as Partial<LeaveRecord>
+  if (typeof raw.start !== 'string' || typeof raw.end !== 'string') return null
+  if (!isValidTime(raw.start) || !isValidTime(raw.end)) return null
+  if (raw.start >= raw.end) return null
+  const record: LeaveRecord = {
+    id: typeof raw.id === 'string' && raw.id ? raw.id : newLeaveId(),
+    date,
+    start: raw.start,
+    end: raw.end,
+    kind: isLeaveKind(raw.kind) ? raw.kind : 'personal',
+    deductPercent: clampPercent(Number(raw.deductPercent ?? 100)),
+  }
+  if (typeof raw.note === 'string' && raw.note) record.note = raw.note
+  return record
+}
+
+function normalizeLeaves(value: unknown): Record<string, LeaveRecord[]> {
+  if (!value || typeof value !== 'object') return {}
+  const limit = cutoffDate(LEAVE_KEEP_DAYS)
+  const out: Record<string, LeaveRecord[]> = {}
+  for (const [date, list] of Object.entries(value as Record<string, unknown>)) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue
+    if (date < limit) continue
+    if (!Array.isArray(list)) continue
+    const records: LeaveRecord[] = []
+    for (const item of list) {
+      const record = normalizeLeave(item, date)
+      if (record) records.push(record)
+    }
+    if (records.length > 0) out[date] = records
+  }
+  return out
+}
+
 function loadSettings(): Settings {
   const parsed = readJson<Partial<Settings> | null>(STORAGE_KEY, null)
   if (!parsed || typeof parsed !== 'object') return defaultSettings()
@@ -71,6 +118,7 @@ function loadSettings(): Settings {
       weeklyOverrides: parsed.weeklyOverrides ?? {},
       startDate: typeof parsed.startDate === 'string' ? parsed.startDate : base.startDate,
       sessions: pruneSessions(parsed.sessions ?? {}),
+      leaves: normalizeLeaves(parsed.leaves ?? {}),
     }
   } catch {
     return defaultSettings()
@@ -184,7 +232,7 @@ export function clockOut(now: Date): void {
     return
   }
 
-  const slots = daySchedule(date, settings, allHolidayData()).slots
+  const slots = daySchedule(date, settings, allHolidayData()).workSlots
   const bounds = slotBounds(slots)
   if (!bounds) return
   const dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
@@ -195,6 +243,56 @@ export function clockOut(now: Date): void {
 
 export function clearSession(date: string): void {
   delete settings.sessions[date]
+}
+
+/** 某一天的请假记录 */
+export function leavesOn(date: string): LeaveRecord[] {
+  return settings.leaves[date] ?? []
+}
+
+/** 新增一条请假记录 */
+export function addLeave(
+  date: string,
+  input: { start: string; end: string; kind: LeaveRecord['kind']; deductPercent: number },
+): LeaveRecord | null {
+  if (!isValidTime(input.start) || !isValidTime(input.end)) return null
+  if (input.start >= input.end) return null
+  const record: LeaveRecord = {
+    id: newLeaveId(),
+    date,
+    start: input.start,
+    end: input.end,
+    kind: input.kind,
+    deductPercent: clampPercent(input.deductPercent),
+  }
+  const list = settings.leaves[date] ? [...settings.leaves[date]!] : []
+  list.push(record)
+  settings.leaves[date] = list
+  return record
+}
+
+/** 修改一条请假记录 */
+export function updateLeave(date: string, id: string, patch: Partial<LeaveRecord>): void {
+  const list = settings.leaves[date]
+  if (!list) return
+  const current = list.find((record) => record.id === id)
+  if (!current) return
+  const next: LeaveRecord = { ...current, ...patch, id: current.id, date: current.date }
+  if (!isValidTime(next.start) || !isValidTime(next.end) || next.start >= next.end) return
+  next.deductPercent = clampPercent(next.deductPercent)
+  settings.leaves[date] = list.map((record) => (record.id === id ? next : record))
+}
+
+/** 删除一条请假记录 */
+export function removeLeave(date: string, id: string): void {
+  const list = settings.leaves[date]
+  if (!list) return
+  const next = list.filter((record) => record.id !== id)
+  if (next.length > 0) {
+    settings.leaves[date] = next
+  } else {
+    delete settings.leaves[date]
+  }
 }
 
 export function resetSettings(): void {

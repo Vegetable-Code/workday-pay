@@ -27,6 +27,8 @@ import MonthCalendar from '@/components/MonthCalendar.vue'
 import StatCard from '@/components/StatCard.vue'
 import SettingsDrawer from '@/components/SettingsDrawer.vue'
 import ClockButton from '@/components/ClockButton.vue'
+import LeaveEditor from '@/components/LeaveEditor.vue'
+import { leaveRanges } from '@/core/leave'
 
 const now = useNow()
 const {
@@ -58,6 +60,19 @@ const selectedSlots = computed(() => {
   if (!selectedDay.value) return []
   return daySchedule(selectedDate.value, settings, holidayData.value).slots
 })
+
+const selectedLeaveRanges = computed(() =>
+  leaveRanges(settings.leaves[selectedDate.value] ?? []).map((range) => ({
+    start: range.start,
+    end: range.end,
+  })),
+)
+
+const monthLeaveDates = computed(() =>
+  result.value.days
+    .filter((day) => (settings.leaves[day.date]?.length ?? 0) > 0)
+    .map((day) => day.date),
+)
 
 const todaySlots = computed(() =>
   daySchedule(today.value, settings, holidayData.value).slots,
@@ -147,6 +162,18 @@ const makeupWorkdayCount = computed(
 
 const workdayCountHint = computed(() => {
   return `${result.value.workdayCount} 个工作日 · 含调休补班 ${makeupWorkdayCount.value} 天 · 日均 ${formatHours(averageDayHours.value)} 小时`
+})
+
+/** 请假统计提示:条数、时长与折算成钱的扣款 */
+const leaveHint = computed(() => {
+  if (result.value.leaveCount === 0) return '本月没有请假记录'
+  const paid = result.value.creditedHours - result.value.workedHours
+  const parts = [
+    `${result.value.leaveCount} 次 · ${formatHours(result.value.leaveHours)} 小时`,
+    `扣 ¥${formatMoney(result.value.leaveDeduction)}`,
+  ]
+  if (paid > 0.0001) parts.push(`带薪 ${formatHours(paid)} 小时`)
+  return parts.join(' · ')
 })
 
 const upcomingHolidays = computed(() =>
@@ -330,16 +357,26 @@ function toggleClock(): void {
             </h2>
             <span class="panel__badge">{{ selectedDay?.name ?? '' }}</span>
           </div>
-          <TodayTimeline
-            :slots="selectedSlots"
-            :now-minutes="nowMinutes"
-            :worked-minutes="selectedEarnings.workedMinutes"
-            :scheduled-minutes="selectedEarnings.scheduledMinutes"
-            :is-workday="selectedEarnings.isWorkday"
-            :session-from="selectedSession.from"
-            :session-to="selectedSession.to"
-            :empty-text="timelineEmptyText"
-          />
+          <div class="panel__body">
+            <TodayTimeline
+              :slots="selectedSlots"
+              :now-minutes="nowMinutes"
+              :worked-minutes="selectedEarnings.workedMinutes"
+              :scheduled-minutes="selectedEarnings.scheduledMinutes"
+              :is-workday="selectedEarnings.isWorkday"
+              :session-from="selectedSession.from"
+              :session-to="selectedSession.to"
+              :leave-ranges="selectedLeaveRanges"
+              :empty-text="timelineEmptyText"
+            />
+
+            <LeaveEditor
+              :date="selectedDate"
+              :slots="selectedSlots"
+              :hourly-rate="result.hourlyRate"
+              :is-workday="selectedEarnings.isWorkday"
+            />
+          </div>
         </div>
       </section>
 
@@ -372,6 +409,13 @@ function toggleClock(): void {
             :hint="`本月自然日已过 ${formatPercent(result.monthElapsedRatio)}`"
           />
           <StatCard
+            label="本月请假"
+            :value="formatHours(result.leaveHours)"
+            unit="小时"
+            :hint="leaveHint"
+            :tone="result.leaveCount > 0 ? 'brick' : 'default'"
+          />
+          <StatCard
             label="入职日期"
             :value="startDateLabel"
             :hint="startDateHint"
@@ -394,6 +438,7 @@ function toggleClock(): void {
             :today="today"
             :selected="selectedDate"
             :workday-count="result.workdayCount"
+            :leave-dates="monthLeaveDates"
             @select="selectDate"
           />
 
@@ -649,6 +694,13 @@ function toggleClock(): void {
   color: var(--ivory-600);
 }
 
+.panel__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-height: 0;
+}
+
 .stats {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -754,6 +806,14 @@ function toggleClock(): void {
 
   .panel--fill .panel__head {
     margin-bottom: var(--space-2);
+  }
+
+  /* 时间轴与请假区并排,请假记录再多也不会把时间轴压扁 */
+  .panel__body {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 288px;
+    gap: var(--space-3);
+    align-items: start;
   }
 
   .stats {

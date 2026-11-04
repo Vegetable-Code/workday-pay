@@ -4,3 +4,5 @@ dist-single/
 .npmcache/
 *.local
 .DS_Store
+.devserver.log
+.devserver.err.log

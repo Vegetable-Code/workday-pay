@@ -14,6 +14,8 @@ const props = defineProps<{
   sessionFrom: number | null
   /** 计时终点(分钟) */
   sessionTo: number | null
+  /** 请假区间(分钟),画成斜纹覆盖在时间轴上 */
+  leaveRanges?: { start: number; end: number }[]
   /** 非工作日时的提示文案 */
   emptyText?: string
 }>()
@@ -95,6 +97,20 @@ const markerLeft = computed(() =>
   Math.min(100, Math.max(0, percent(Math.min(sessionTo.value, windowEnd.value)))),
 )
 
+/** 请假区间裁剪到时间轴窗口内,再换算成百分比 */
+const leaveSegments = computed(() =>
+  (props.leaveRanges ?? [])
+    .map((range) => ({
+      start: Math.max(range.start, windowStart.value),
+      end: Math.min(range.end, windowEnd.value),
+    }))
+    .filter((range) => range.end > range.start)
+    .map((range) => ({
+      left: percent(range.start),
+      width: percent(range.end) - percent(range.start),
+    })),
+)
+
 function percent(minutes: number): number {
   return ((minutes - windowStart.value) / windowSize.value) * 100
 }
@@ -154,6 +170,12 @@ const progress = computed(() =>
             :style="{ left: `${segment.fillLeft}%`, width: `${segment.fillWidth}%` }"
           />
         </div>
+        <div
+          v-for="(segment, index) in leaveSegments"
+          :key="`leave-${index}`"
+          class="timeline__leave"
+          :style="{ left: `${segment.left}%`, width: `${segment.width}%` }"
+        />
         <div class="timeline__marker" :style="{ left: `${markerLeft}%` }" />
       </div>
 
@@ -252,6 +274,20 @@ const progress = computed(() =>
   );
 }
 
+/* 请假时段盖在计时填充之上,表示这段时间不发工资 */
+.timeline__leave {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: repeating-linear-gradient(
+    135deg,
+    rgba(217, 106, 78, 0.62) 0 4px,
+    rgba(60, 24, 14, 0.62) 4px 8px
+  );
+  border-left: 1px solid rgba(217, 106, 78, 0.9);
+  border-right: 1px solid rgba(217, 106, 78, 0.9);
+}
+
 .timeline__marker {
   position: absolute;
   top: -3px;
@@ -330,11 +366,19 @@ const progress = computed(() =>
   transition: width var(--dur-base) var(--ease-out);
 }
 
-/* 桌面端时间轴按面板剩余高度伸缩,内容超出时面板内部滚动而不是被裁掉 */
+/* 桌面端时间轴铺满左栏,内容超出时由面板统一处理 */
 @media (min-width: 920px) {
   .timeline {
     flex: 1 1 auto;
-    overflow: auto;
+    gap: var(--space-2);
+  }
+
+  .timeline__track {
+    height: 30px;
+  }
+
+  .timeline__slots {
+    gap: var(--space-1) var(--space-2);
   }
 }
 </style>
